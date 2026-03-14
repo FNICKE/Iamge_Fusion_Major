@@ -10,13 +10,21 @@ from flask_cors import CORS
 from PIL import Image
 import traceback
 
-# Import the new deep learning model
+# Import fusion models
 try:
-    from fusion_model import deep_fuse
+    from fusion_model import deep_fuse, ir_vis_color_fuse, multi_focus_clear_fuse, ir_vis_clean_fuse
     DEEP_LEARNING_AVAILABLE = True
 except ImportError as e:
-    print(f"Deep learning fusion model could not be loaded: {e}")
+    print(f"Fusion model could not be loaded: {e}")
     DEEP_LEARNING_AVAILABLE = False
+    deep_fuse = ir_vis_color_fuse = multi_focus_clear_fuse = ir_vis_clean_fuse = None
+
+# Import EMMA (CVPR 2024) pretrained model for clean IR+Visible fusion
+try:
+    from emma import emma_fuse, EMMA_AVAILABLE
+except ImportError:
+    EMMA_AVAILABLE = False
+    emma_fuse = None
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -163,13 +171,63 @@ def fuse_deep_learning(images):
     return np.array(pil_result, dtype=np.float32) / 255.0
 
 
+def fuse_ir_vis_clean(images):
+    """
+    IR + Visible → Clean & Clear. For thermal + low-light visible (night scenes).
+    Strong denoising, contrast, sharpening for crystal-clear output.
+    """
+    if ir_vis_clean_fuse is None:
+        raise RuntimeError("Fusion model not available.")
+    pil_result = ir_vis_clean_fuse(images, use_emma=EMMA_AVAILABLE)
+    return np.array(pil_result, dtype=np.float32) / 255.0
+
+
+def fuse_ir_vis_color(images):
+    """
+    State-of-the-art dual-scale HSV fusion designed for IR and VIS.
+    Preserves vibrant visible colors while injecting sharp glowing infrared thermal details.
+    """
+    if not DEEP_LEARNING_AVAILABLE:
+        raise RuntimeError("Fusion model is not available.")
+    pil_result = ir_vis_color_fuse(images)
+    return np.array(pil_result, dtype=np.float32) / 255.0
+
+
+def fuse_multi_focus_clear(images):
+    """
+    Blur + Clear fusion: matches pixels, picks sharper regions, outputs clean all-in-focus.
+    """
+    if multi_focus_clear_fuse is None:
+        raise RuntimeError("Fusion model not available.")
+    pil_result = multi_focus_clear_fuse(images)
+    return np.array(pil_result, dtype=np.float32) / 255.0
+
+
+def fuse_emma(images):
+    """
+    EMMA (CVPR 2024) pretrained model — clean, crystal-clear IR+Visible fusion.
+    Equivariant multi-modality fusion for state-of-the-art quality.
+    """
+    if not EMMA_AVAILABLE or emma_fuse is None:
+        raise RuntimeError(
+            "EMMA model is not available. Install: pip install torch einops, then run: python -m emma.download_model"
+        )
+    pil_result = emma_fuse(images, preserve_color=True)
+    return np.array(pil_result, dtype=np.float32) / 255.0
+
+
 FUSION_METHODS = {
-    "average":           fuse_average,
-    "max":               fuse_max,
-    "gradient_weighted": fuse_weighted_gradient,
-    "laplacian_pyramid": fuse_laplacian_pyramid,
-    "deep_learning":     fuse_deep_learning,
+    "average":              fuse_average,
+    "max":                  fuse_max,
+    "gradient_weighted":    fuse_weighted_gradient,
+    "laplacian_pyramid":    fuse_laplacian_pyramid,
+    "multi_focus_clear":    fuse_multi_focus_clear,
+    "ir_vis_clean":         fuse_ir_vis_clean,
+    "deep_learning":        fuse_deep_learning,
+    "ir_vis_color":         fuse_ir_vis_color,
 }
+if EMMA_AVAILABLE:
+    FUSION_METHODS["emma"] = fuse_emma
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +313,20 @@ def get_methods():
             "speed": "Slow",
             "quality": "Excellent",
         },
+        {
+            "id": "multi_focus_clear",
+            "name": "Blur+Clear → Clean (Multi-Focus)",
+            "description": "Fuse blurry + clear images. Matches pixels, picks sharper regions. Output: crystal-clear all-in-focus.",
+            "speed": "Medium",
+            "quality": "Excellent",
+        },
+        {
+            "id": "ir_vis_clean",
+            "name": "IR+Visible → Clean & Clear",
+            "description": "Thermal/IR + low-light visible → denoise, enhance, sharpen. Best for night scenes.",
+            "speed": "Medium",
+            "quality": "Excellent",
+        },
     ]
     if DEEP_LEARNING_AVAILABLE:
         methods.append({
@@ -264,6 +336,21 @@ def get_methods():
             "speed": "Very Slow",
             "quality": "State-of-the-art",
         })
+        methods.append({
+            "id": "ir_vis_color",
+            "name": "IR+VIS Color Fusion",
+            "description": "State-of-the-art dual-scale HSV fusion. Perfectly preserves visible colors while injecting sharp glowing infrared thermal details.",
+            "speed": "Medium",
+            "quality": "Exceptional",
+        })
+        if EMMA_AVAILABLE:
+            methods.append({
+                "id": "emma",
+                "name": "EMMA (CVPR 2024)",
+                "description": "Pretrained equivariant multi-modality fusion. Clean, crystal-clear output — best for IR+Visible pairs.",
+                "speed": "Medium",
+                "quality": "State-of-the-art",
+            })
     return jsonify({"methods": methods})
 
 

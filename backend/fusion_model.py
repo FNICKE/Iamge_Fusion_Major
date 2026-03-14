@@ -97,6 +97,32 @@ def build_weight_maps(grays: list) -> list:
     return [a / total for a in acts]
 
 
+def sharpness_map(gray: np.ndarray, ksize: int = 5) -> np.ndarray:
+    """
+    Per-pixel sharpness: variance of Laplacian in local window.
+    Blurry regions → low sharpness; sharp regions → high sharpness.
+    """
+    lap = cv2.Laplacian((gray * 255).astype(np.float32), cv2.CV_32F, ksize=3)
+    lap = np.abs(lap)
+    kernel = np.ones((ksize, ksize), np.float32) / (ksize * ksize)
+    local_var = cv2.filter2D(lap ** 2, -1, kernel) - (cv2.filter2D(lap, -1, kernel) ** 2)
+    local_var = np.maximum(local_var, 0)
+    return gaussian_filter(np.sqrt(local_var + 1e-8) / 255.0, sigma=1.0)
+
+
+def build_sharpness_weights(grays: list, temperature: float = 0.08) -> list:
+    """
+    Steep soft-max over sharpness: strongly favors sharper pixels.
+    Low temperature → almost binary (pick sharper pixel).
+    """
+    sharp = [sharpness_map(g) for g in grays]
+    stacked = np.stack(sharp, axis=0)
+    # Steep softmax: exp(x/T) with small T
+    exp = np.exp((stacked - stacked.max(axis=0, keepdims=True)) / max(temperature, 1e-6))
+    total = exp.sum(axis=0) + 1e-8
+    return [exp[i] / total for i in range(len(grays))]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Laplacian Pyramid fusion (per-channel)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +239,14 @@ def bilateral_denoise(arr: np.ndarray) -> np.ndarray:
     return denoised.astype(np.float32) / 255.0
 
 
+def denoise_lowlight(arr: np.ndarray, strength: float = 10.0) -> np.ndarray:
+    """Non-local means denoising for low-light noise. Preserves edges."""
+    img8 = (arr * 255).clip(0, 255).astype(np.uint8)
+    h = int(max(3, strength))
+    out = cv2.fastNlMeansDenoisingColored(img8, None, h, h, 7, 21)
+    return out.astype(np.float32) / 255.0
+
+
 def retinex_tone_map(arr: np.ndarray, sigma: float = 60.0) -> np.ndarray:
     """
     Single-scale Retinex: recover detail hidden in dark / overexposed regions.
@@ -321,6 +355,40 @@ def cnn_refine(arr: np.ndarray) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Multi-Focus: Blur + Clear → Clean All-in-Focus
+# ─────────────────────────────────────────────────────────────────────────────
+
+def multi_focus_clear_fuse(pil_images: list) -> Image.Image:
+    """
+    Fuse blurry + clear images into one crystal-clear result.
+    Matches pixels: picks the sharper region from each source.
+    Perfect for: one blurry image + one clear image of same scene.
+    """
+    if len(pil_images) < 2:
+        raise ValueError("Need at least 2 images.")
+
+    images, W, H = resize_to_common(pil_images, max_px=1024)
+    arrs  = [pil_to_np(img) for img in images]
+    grays = [0.299*a[:,:,0] + 0.587*a[:,:,1] + 0.114*a[:,:,2] for a in arrs]
+
+    # Sharpness-prior weights (steep: strongly pick sharper pixels)
+    weights = build_sharpness_weights(grays, temperature=0.06)
+
+    depth = min(6, int(np.log2(min(W, H))) - 1)
+    fused = laplacian_pyramid_fuse(arrs, weights, depth)
+    fused_Y = 0.299*fused[:,:,0] + 0.587*fused[:,:,1] + 0.114*fused[:,:,2]
+    coloured = smart_colour_blend(arrs, fused_Y)
+
+    denoised = bilateral_denoise(coloured)
+    enhanced = clahe_enhance(denoised, clip=3.5)
+    sharp = unsharp_mask(enhanced, radius=0.8, amount=2.5, threshold=0.003)
+    vivid = boost_saturation(sharp, factor=1.15)
+    final = cnn_refine(vivid)
+
+    return np_to_pil(final)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC API
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -378,3 +446,128 @@ def deep_fuse(pil_images: list) -> Image.Image:
     final = cnn_refine(vivid)
 
     return np_to_pil(final)
+
+
+def ir_vis_color_fuse(pil_images: list) -> Image.Image:
+    """
+    Specifically designed for Infrared (IR) and Visible (VIS) image fusion.
+    Extracts the color from the most colorful image (Visible), 
+    and injects the absolute highest details and bright thermal features 
+    from both images into a perfectly clear color image.
+    """
+    if len(pil_images) < 2:
+        raise ValueError("Need at least 2 images.")
+
+    # ── Step 1: align resolutions ──────────────────────────────────────────
+    images, W, H = resize_to_common(pil_images, max_px=1024)
+    arrays = [pil_to_np(img) for img in images]
+    
+    # ── Step 2: Identify Visible vs Infrared ───────────────────────────────
+    def color_saturation(arr):
+        if arr.shape[2] == 1: return 0.0
+        mx, mn = arr.max(axis=2), arr.min(axis=2)
+        return float((mx - mn).mean())
+
+    sats = [color_saturation(a) for a in arrays]
+    vis_idx = int(np.argmax(sats))
+    ir_idx = 1 if vis_idx == 0 else 0
+        
+    vis_img = arrays[vis_idx]
+    ir_img = arrays[ir_idx]
+    
+    # ── Step 3: Extract Luminance ──────────────────────────────────────────
+    def get_luma(arr):
+        return 0.299 * arr[:,:,0] + 0.587 * arr[:,:,1] + 0.114 * arr[:,:,2]
+        
+    V_vis = get_luma(vis_img)
+    V_ir  = get_luma(ir_img)
+    
+    # ── Step 4: Enhance IR Contrast for clear thermal targets ──────────────
+    ir_uint8 = (V_ir * 255).clip(0,255).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
+    V_ir_enhanced = clahe.apply(ir_uint8).astype(np.float32) / 255.0
+    
+    # ── Step 5: Base/Detail Edge-Preserving Decomposition ──────────────────
+    def decompose(img_gray):
+        img8 = (img_gray * 255).clip(0, 255).astype(np.uint8)
+        base8 = cv2.bilateralFilter(img8, d=9, sigmaColor=50, sigmaSpace=50)
+        base = base8.astype(np.float32) / 255.0
+        detail = img_gray - base
+        return base, detail
+        
+    B_vis, D_vis = decompose(V_vis)
+    B_ir, D_ir = decompose(V_ir_enhanced)
+    
+    # ── Step 6: Fusion Rules ───────────────────────────────────────────────
+    B_fused = np.maximum(B_vis, B_ir)
+    
+    mask_vis = np.abs(D_vis) > np.abs(D_ir)
+    D_fused = np.where(mask_vis, D_vis, D_ir)
+    
+    V_fused = np.clip(B_fused + D_fused, 0.0, 1.0)
+    
+    # ── Step 7: HSV Recombination & Vibrant Color Boost ────────────────────
+    vis_uint8 = (vis_img * 255).clip(0, 255).astype(np.uint8)
+    hsv_vis = cv2.cvtColor(vis_uint8, cv2.COLOR_RGB2HSV).astype(np.float32)
+    
+    hsv_vis[:,:,2] = V_fused * 255.0
+    hsv_vis[:,:,1] = np.clip(hsv_vis[:,:,1] * 1.30, 0, 255)
+    
+    hsv_vis = hsv_vis.clip(0, 255).astype(np.uint8)
+    fused_rgb = cv2.cvtColor(hsv_vis, cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
+    
+    # ── Step 8: Final Unsharp Mask for Clean & Clear Image ─────────────────
+    blur = cv2.GaussianBlur(fused_rgb, (0, 0), 2.0)
+    final_output = np.clip(fused_rgb + 1.5 * (fused_rgb - blur), 0.0, 1.0)
+    
+    return np_to_pil(final_output)
+
+
+def ir_vis_clean_fuse(pil_images: list, use_emma: bool = False) -> Image.Image:
+    """
+    IR + Visible fusion tuned for clean, clear output.
+    For: thermal/IR + low-light visible (e.g. night scenes).
+    Pipeline: fuse → denoise (low-light) → Retinex → CLAHE → sharpen → saturation.
+    """
+    if len(pil_images) < 2:
+        raise ValueError("Need at least 2 images (IR + Visible).")
+
+    # Ensure RGB (grayscale IR → 3 channels)
+    images = [img.convert("RGB") if img.mode != "RGB" else img for img in pil_images[:2]]
+
+    # Fuse: EMMA if available and requested, else ir_vis_color
+    if use_emma:
+        try:
+            from emma import emma_fuse
+            import os as _os
+            _emma_dir = _os.path.dirname(_os.path.abspath(__import__("emma").__file__))
+            _finetuned = _os.path.join(_emma_dir, "models", "EMMA_irvis_finetuned.pth")
+            _model_path = _finetuned if _os.path.isfile(_finetuned) else None
+            fused = emma_fuse(images, model_path=_model_path, preserve_color=True, max_px=1024)
+        except Exception:
+            fused = ir_vis_color_fuse(images)
+    else:
+        fused = ir_vis_color_fuse(images)
+
+    arr = pil_to_np(fused)
+
+    # Strong denoising for low-light noise
+    arr = denoise_lowlight(arr, strength=8.0)
+
+    # Bilateral for edge-preserving cleanup
+    arr = bilateral_denoise(arr)
+
+    # Retinex: recover shadow detail
+    arr = retinex_tone_map(arr, sigma=40.0)
+
+    # Strong CLAHE for low-light contrast
+    arr = clahe_enhance(arr, clip=4.0)
+
+    # Aggressive unsharp for clarity
+    arr = unsharp_mask(arr, radius=0.8, amount=2.8, threshold=0.002)
+
+    # Mild saturation
+    arr = boost_saturation(arr, factor=1.25)
+
+    arr = cnn_refine(arr)
+    return np_to_pil(arr)

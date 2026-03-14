@@ -4,3 +4,7 @@ Pillow
 numpy
 opencv-python
 scipy
+
+# EMMA (CVPR 2024) pretrained fusion - optional but recommended
+torch
+einops

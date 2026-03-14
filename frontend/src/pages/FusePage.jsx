@@ -22,16 +22,36 @@ const METHOD_INFO = {
     desc: 'Multi-scale pyramid fusion — classic approach combining frequency bands.',
     border: 'hover:border-purple-500', bg: 'hover:bg-purple-500/10', glow: 'shadow-purple-500/30'
   },
+  multi_focus_clear: { 
+    name: 'Blur+Clear → Clean', icon: '✨', speed: 'Medium', quality: 'Excellent',
+    desc: 'Blur + clear images → crystal-clear output. Matches pixels, picks sharper regions.',
+    border: 'hover:border-teal-500', bg: 'hover:bg-teal-500/10', glow: 'shadow-teal-500/40'
+  },
+  ir_vis_clean: { 
+    name: 'IR+Visible → Clean & Clear', icon: '🌙', speed: 'Medium', quality: 'Excellent',
+    desc: 'Thermal IR + low-light visible → clean output. Denoise, enhance, sharpen. For night scenes.',
+    border: 'hover:border-amber-500', bg: 'hover:bg-amber-500/10', glow: 'shadow-amber-500/40'
+  },
   deep_learning: { 
     name: 'Deep Enhancement Fusion', icon: '🧠', speed: 'Slow', quality: 'State-of-the-Art',
     desc: 'Advanced per-pixel saliency, Laplacian Pyramid, and unsharp masking for crystal clear output.',
     border: 'hover:border-indigo-400', bg: 'hover:bg-indigo-500/10', glow: 'shadow-indigo-500/40'
   },
+  ir_vis_color: { 
+    name: 'IR+VIS Color Fusion', icon: '🌈', speed: 'Medium', quality: 'Exceptional',
+    desc: 'Dual-scale HSV fusion. Preserves vibrant visible colors while injecting bright thermal details.',
+    border: 'hover:border-pink-500', bg: 'hover:bg-pink-500/10', glow: 'shadow-pink-500/40'
+  },
+  emma: { 
+    name: 'EMMA (CVPR 2024)', icon: '🔬', speed: 'Medium', quality: 'State-of-the-Art',
+    desc: 'Pretrained equivariant fusion. Clean, crystal-clear output for IR+Visible pairs.',
+    border: 'hover:border-cyan-500', bg: 'hover:bg-cyan-500/10', glow: 'shadow-cyan-500/40'
+  },
 }
 
 export default function FusePage() {
   const [images,    setImages]   = useState([])   
-  const [method,    setMethod]   = useState('deep_learning')
+  const [method,    setMethod]   = useState('ir_vis_clean')
   const [loading,   setLoading]  = useState(false)
   const [result,    setResult]   = useState(null)  
   const [error,     setError]    = useState(null)

@@ -5,6 +5,11 @@ const METHOD_LABELS = {
   max:               { name: 'Max Fusion',         icon: '⬆️', color: 'from-emerald-500 to-emerald-700' },
   gradient_weighted: { name: 'Gradient-Weighted',  icon: '∇',  color: 'from-amber-500 to-amber-700' },
   laplacian_pyramid: { name: 'Laplacian Pyramid',  icon: '🔺', color: 'from-purple-500 to-purple-700' },
+  multi_focus_clear: { name: 'Blur+Clear → Clean', icon: '✨', color: 'from-teal-500 to-teal-700' },
+  ir_vis_clean: { name: 'IR+Visible → Clean', icon: '🌙', color: 'from-amber-500 to-amber-700' },
+  deep_learning:     { name: 'Deep Fusion',        icon: '🧠', color: 'from-indigo-500 to-indigo-700' },
+  ir_vis_color:      { name: 'IR+VIS Color',       icon: '🌈', color: 'from-pink-500 to-pink-700' },
+  emma:              { name: 'EMMA (CVPR 2024)',   icon: '🔬', color: 'from-cyan-500 to-cyan-700' },
 }
 
 export default function ComparePage() {
